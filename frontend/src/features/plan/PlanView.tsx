@@ -1,25 +1,29 @@
-import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type UIEvent } from 'react'
+import {
+  useCallback, useMemo, useRef, useState,
+  type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type UIEvent,
+} from 'react'
 import { api } from '../../api/client'
 import { useProjectMutation } from '../../api/hooks'
 import type { Project, WorkItem, WorkItemKind } from '../../api/types'
-import { useToast } from '../../components/Toast'
+import { Button } from '../../components/Button'
+import { useNotify } from '../../components/feedback/Notifications'
 import { KIND_LABEL, KIND_ORDER } from '../../lib/labels'
+import { MSG, dependencyText, theKind } from '../../lib/messages'
 import { formatDate, formatDays, formatDuration, predecessorNotation } from '../../lib/format'
 import { insertionTarget, memberNames, visibleItems } from '../../lib/wbs'
 import { GanttBody, GanttHeader } from '../gantt/GanttChart'
 import { ROW_HEIGHT, buildScale, type Zoom } from '../gantt/scale'
-import { DeleteItemDialog } from './DeleteItemDialog'
 import { ItemEditor } from './ItemEditor'
+import { useDeleteItem } from './useDeleteItem'
 
 const KIND_ICON: Record<WorkItemKind, string> = {
   phase: '▣', sprint: '⟳', story: '◉', task: '▪', subtask: '·', milestone: '◆',
 }
 
 export function PlanView({ project }: { project: Project }) {
-  const toast = useToast()
+  const notify = useNotify()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [zoom, setZoom] = useState<Zoom>('day')
   const [criticalOnly, setCriticalOnly] = useState(false)
@@ -49,13 +53,33 @@ export function PlanView({ project }: { project: Project }) {
   }, [project.items, collapsed, criticalOnly, byId])
   const scale = useMemo(() => buildScale(project, project.items, zoom), [project, zoom])
 
-  const create = useProjectMutation(project.id, (a: { kind: WorkItemKind; parentId: string | null; name: string }) =>
-    api.createItem(project.id, { kind: a.kind, name: a.name, parent_id: a.parentId }))
-  const move = useProjectMutation(project.id, (a: { id: string; parentId: string | null; position: number }) =>
-    api.moveItem(project.id, a.id, a.parentId, a.position))
-  const link = useProjectMutation(project.id, (a: { from: string; to: string }) =>
-    api.createDependency(project.id, { predecessor_id: a.from, successor_id: a.to, type: 'FS', lag_value: 0, lag_unit: 'day' }))
-  const recalc = useProjectMutation(project.id, () => api.recalculate(project.id))
+  const create = useProjectMutation(project.id,
+    (a: { kind: WorkItemKind; parentId: string | null; name: string }) =>
+      api.createItem(project.id, { kind: a.kind, name: a.name, parent_id: a.parentId }), {
+      success: (updated, a, createdId) => {
+        const item = updated.items.find((i) => i.id === createdId)
+        return item ? MSG.itemCreated(item, updated.items.find((i) => i.id === a.parentId)) : null
+      },
+      error: (a) => `No se pudo crear ${theKind(a.kind)}`,
+    })
+  const move = useProjectMutation(project.id,
+    (a: { item: WorkItem; position: number }) => api.moveItem(project.id, a.item.id, a.item.parent_id, a.position), {
+      error: (a) => `No se pudo mover “${a.item.name}”`, // the new position in the outline is the feedback
+    })
+  const link = useProjectMutation(project.id,
+    (a: { from: WorkItem; to: WorkItem }) => api.createDependency(project.id,
+      { predecessor_id: a.from.id, successor_id: a.to.id, type: 'FS', lag_value: 0, lag_unit: 'day' }), {
+      error: (a) => `No se pudo vincular “${a.from.name}” → “${a.to.name}”`,
+    })
+  const unlink = useProjectMutation(project.id, (id: string) => api.deleteDependency(project.id, id), {
+    success: () => ({ title: 'Dependencia deshecha', message: 'Se eliminó la dependencia recién creada.' }),
+    error: 'No se pudo deshacer la dependencia',
+  })
+  const recalc = useProjectMutation(project.id, () => api.recalculate(project.id), {
+    success: (updated) => MSG.recalculated(updated.schedule?.finish),
+    error: 'No se pudo recalcular el cronograma',
+  })
+  const { requestDelete, isDeleting } = useDeleteItem(project, () => setSelectedId(null))
 
   const add = (kind: WorkItemKind) => {
     const target = insertionTarget(project, selected, kind)
@@ -73,13 +97,30 @@ export function PlanView({ project }: { project: Project }) {
     })
   }
 
+  const linkItems = (fromId: string, toId: string) => {
+    const from = byId.get(fromId)
+    const to = byId.get(toId)
+    if (!from || !to) return
+    link.mutate({ from, to }, {
+      onSuccess: (result) => notify.success({
+        ...MSG.dependencyCreated(dependencyText(from.name, to.name, 'FS', 0, 'day')),
+        action: 'id' in result ? { label: 'Deshacer', onClick: () => unlink.mutate(result.id) } : undefined,
+      }),
+    })
+  }
+
+  const siblings = selected ? project.items.filter((i) => i.parent_id === selected.parent_id) : []
+  const selectedIndex = selected ? siblings.findIndex((i) => i.id === selected.id) : -1
   const shift = (delta: number) => {
-    if (!selected) return
-    const siblings = project.items.filter((i) => i.parent_id === selected.parent_id)
-    const index = siblings.findIndex((i) => i.id === selected.id)
-    const position = index + delta
-    if (position < 0 || position >= siblings.length) return
-    move.mutate({ id: selected.id, parentId: selected.parent_id, position })
+    const position = selectedIndex + delta
+    if (!selected || position < 0 || position >= siblings.length) return
+    move.mutate({ item: selected, position })
+  }
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!selected || (e.target as HTMLElement).closest('input, select, textarea, .modal')) return
+    if (e.key === 'Delete') requestDelete(selected)
+    else if (e.key === 'Enter') setEditingId(selected.id)
   }
 
   const toggle = (id: string) =>
@@ -111,27 +152,33 @@ export function PlanView({ project }: { project: Project }) {
 
   const mpd = project.settings.minutes_per_day
   const editing = editingId ? byId.get(editingId) : undefined
-  const deleting = deletingId ? byId.get(deletingId) : undefined
 
   return (
-    <div className="plan">
+    <div className="plan" onKeyDown={onKeyDown} tabIndex={-1}>
       <div className="toolbar">
         <div className="toolbar-group">
           {KIND_ORDER.map((kind) => {
             const target = insertionTarget(project, selected, kind)
             return (
-              <button key={kind} className="btn btn-sm" disabled={!target || create.isPending} onClick={() => add(kind)}
-                title={target ? `Agregar ${KIND_LABEL[kind].toLowerCase()}` : `La metodología no permite una ${KIND_LABEL[kind].toLowerCase()} aquí`}>
+              <Button key={kind} size="sm" disabled={!target} loading={create.isPending && create.variables?.kind === kind}
+                onClick={() => add(kind)}
+                title={target ? `Agregar ${KIND_LABEL[kind].toLowerCase()}` : `La metodología no permite agregar ${theKind(kind)} aquí`}>
                 + {KIND_LABEL[kind]}
-              </button>
+              </Button>
             )
           })}
         </div>
         <div className="toolbar-group">
-          <button className="btn btn-sm" disabled={!selected} onClick={() => selected && setEditingId(selected.id)}>✎ Editar</button>
-          <button className="btn btn-sm" disabled={!selected} onClick={() => shift(-1)} title="Subir">▲</button>
-          <button className="btn btn-sm" disabled={!selected} onClick={() => shift(1)} title="Bajar">▼</button>
-          <button className="btn btn-sm btn-danger-outline" disabled={!selected} onClick={() => selected && setDeletingId(selected.id)}>🗑 Eliminar</button>
+          <Button size="sm" disabled={!selected} onClick={() => selected && setEditingId(selected.id)}
+            title={selected ? 'Editar (Enter)' : 'Seleccione una fila'}>✎ Editar</Button>
+          <Button size="sm" disabled={selectedIndex <= 0 || move.isPending} onClick={() => shift(-1)}
+            title={selected ? 'Subir dentro de su contenedor' : 'Seleccione una fila'} aria-label="Subir">▲</Button>
+          <Button size="sm" disabled={!selected || selectedIndex >= siblings.length - 1 || move.isPending} onClick={() => shift(1)}
+            title={selected ? 'Bajar dentro de su contenedor' : 'Seleccione una fila'} aria-label="Bajar">▼</Button>
+          <Button size="sm" className="btn-danger-outline" disabled={!selected} loading={isDeleting}
+            onClick={() => selected && requestDelete(selected)} title={selected ? 'Eliminar (Supr)' : 'Seleccione una fila'}>
+            🗑 Eliminar
+          </Button>
         </div>
         <div className="toolbar-group">
           <button className="btn btn-sm" onClick={() => setCollapsed(new Set())}>Expandir</button>
@@ -148,10 +195,7 @@ export function PlanView({ project }: { project: Project }) {
               </button>
             ))}
           </div>
-          <button className="btn btn-sm" disabled={recalc.isPending}
-            onClick={() => recalc.mutate(undefined, { onSuccess: () => toast.success('Cronograma recalculado (CPM)') })}>
-            ↻ Recalcular
-          </button>
+          <Button size="sm" loading={recalc.isPending} onClick={() => recalc.mutate(undefined)}>↻ Recalcular</Button>
         </div>
       </div>
 
@@ -217,9 +261,7 @@ export function PlanView({ project }: { project: Project }) {
             <div className="gantt-body" ref={ganttBodyRef} onScroll={onGanttScroll}>
               <GanttBody project={project} rows={rows} scale={scale} selectedId={selectedId}
                 onSelect={setSelectedId} onOpen={setEditingId}
-                onLink={(from, to) => link.mutate({ from, to }, {
-                  onSuccess: () => toast.success(`Dependencia FS: ${byId.get(from)?.name} → ${byId.get(to)?.name}`),
-                })} />
+                onLink={linkItems} />
               <div style={{ height: 40 }} />
             </div>
           </div>
@@ -233,12 +275,10 @@ export function PlanView({ project }: { project: Project }) {
         <span><i className="lg lg-sprint" /> Sprint</span>
         <span>◆ Hito</span>
         <span><i className="lg lg-nonworking" /> No laborable</span>
-        <span className="muted">Doble clic para editar · arrastre una barra sobre otra para vincular (FS)</span>
+        <span className="muted">Doble clic o Enter para editar · Supr para eliminar · arrastre una barra sobre otra para vincular (FS)</span>
       </div>
 
       {editing && <ItemEditor project={project} item={editing} onClose={() => setEditingId(null)} />}
-      {deleting && <DeleteItemDialog project={project} item={deleting}
-        onClose={() => { setDeletingId(null); setSelectedId(null) }} />}
     </div>
   )
 }

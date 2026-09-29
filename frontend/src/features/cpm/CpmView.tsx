@@ -1,4 +1,5 @@
 import type { Project } from '../../api/types'
+import { Alert } from '../../components/feedback/Alert'
 import { KIND_LABEL } from '../../lib/labels'
 import { formatDate, minutesToDays, percent, round } from '../../lib/format'
 
@@ -19,8 +20,18 @@ export function CpmView({ project }: { project: Project }) {
   return (
     <div className="page-section">
       <h2>Ruta crítica y CPM</h2>
-      {!schedule ? <p className="muted">Aún no hay cronograma.</p> : (
+      {!schedule || project.items.length === 0 ? (
+        <Alert tone="info" title="Aún no hay cronograma">
+          Construya la EDT en la pestaña “EDT y Gantt”: el CPM se calcula automáticamente con cada cambio.
+        </Alert>
+      ) : (
         <>
+          {schedule.target_probability !== null && schedule.target_probability < 0.5 && (
+            <Alert tone="warning" title="Baja probabilidad de cumplir la fecha objetivo">
+              Según PERT, la probabilidad de terminar a tiempo es {percent(schedule.target_probability)}. Revise la ruta crítica:
+              acortar o paralelizar sus actividades es lo único que adelanta el fin del proyecto.
+            </Alert>
+          )}
           <div className="cards">
             <div className="card"><span>Duración del proyecto</span><strong>{schedule.duration_days} días lab.</strong></div>
             <div className="card"><span>Fin calculado</span><strong>{formatDate(schedule.finish)}</strong></div>
@@ -30,7 +41,7 @@ export function CpmView({ project }: { project: Project }) {
           </div>
 
           <h3>Secuencia crítica</h3>
-          {chain.length === 0 ? <p className="muted">No hay actividades críticas.</p> : (
+          {chain.length === 0 ? <Alert tone="info" compact>No hay actividades críticas.</Alert> : (
             <div className="critical-chain">
               {chain.map((item, index) => (
                 <span key={item.id} className="chain-step">

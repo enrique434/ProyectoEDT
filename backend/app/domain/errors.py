@@ -23,7 +23,7 @@ class NotFoundError(DomainError):
     code = "not_found"
 
     def __init__(self, entity: str, entity_id: str) -> None:
-        super().__init__(f"{entity} '{entity_id}' no existe")
+        super().__init__(f"El registro solicitado ({entity}) no existe o fue eliminado.")
         self.entity = entity
         self.entity_id = entity_id
 

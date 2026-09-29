@@ -1,16 +1,20 @@
-import { useState } from 'react'
-import { NavLink, Route, Routes, useParams } from 'react-router-dom'
+import { useCallback, useState } from 'react'
+import { Link, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useProject, useProjectMutation } from '../api/hooks'
 import type { Project, ProjectInput } from '../api/types'
-import { useToast } from '../components/Toast'
+import { Button } from '../components/Button'
+import { Alert } from '../components/feedback/Alert'
+import { useConfirmLeave, useUnsavedChanges } from '../components/feedback/UnsavedChanges'
 import { CalendarView } from '../features/calendar/CalendarView'
 import { CpmView } from '../features/cpm/CpmView'
 import { PlanView } from '../features/plan/PlanView'
 import { ProjectForm } from '../features/projects/ProjectForm'
 import { ResourceView } from '../features/resources/ResourceView'
 import { TeamView } from '../features/team/TeamView'
+import { describeError, isApiError } from '../lib/errors'
 import { METHODOLOGY_LABEL } from '../lib/labels'
+import { MSG } from '../lib/messages'
 import { formatDate, formatDateTime, percent } from '../lib/format'
 
 const TABS: [string, string][] = [
@@ -24,20 +28,45 @@ const TABS: [string, string][] = [
 
 export function ProjectPage() {
   const { projectId = '' } = useParams()
-  const { data: project, isLoading, error } = useProject(projectId)
+  const { data: project, isLoading, error, refetch, isRefetching } = useProject(projectId)
+  const confirmLeave = useConfirmLeave()
+  const navigate = useNavigate()
 
-  if (isLoading) return <p className="page muted">Abriendo proyecto…</p>
-  if (error || !project) return <p className="page error-text">No se pudo abrir el proyecto: {(error as Error)?.message}</p>
+  if (isLoading) return <p className="page muted loading-line"><span className="spinner" /> Abriendo proyecto…</p>
+  if (error || !project) {
+    const notFound = isApiError(error, 'not_found')
+    const { title, message } = describeError(error)
+    return (
+      <main className="page">
+        <Alert tone={notFound ? 'warning' : 'error'} title={notFound ? 'El proyecto no existe' : title}
+          action={
+            <>
+              {!notFound && <Button size="sm" loading={isRefetching} onClick={() => refetch()}>Reintentar</Button>}
+              <Link className="btn btn-sm" to="/">Volver a proyectos</Link>
+            </>
+          }>
+          {notFound ? 'Es posible que haya sido eliminado. Vuelva a la lista para abrir otro proyecto.' : message}
+        </Alert>
+      </main>
+    )
+  }
 
+  const base = `/projects/${project.id}`
   return (
     <main className="project-page">
       <ProjectHeader project={project} />
       <nav className="tabs">
-        {TABS.map(([path, label]) => (
-          <NavLink key={path} to={path ? `/projects/${project.id}/${path}` : `/projects/${project.id}`} end>
-            {label}
-          </NavLink>
-        ))}
+        {TABS.map(([path, label]) => {
+          const to = path ? `${base}/${path}` : base
+          return (
+            <NavLink key={path} to={to} end onClick={async (e) => {
+              e.preventDefault()
+              if (await confirmLeave()) navigate(to)
+            }}>
+              {label}
+            </NavLink>
+          )
+        })}
       </nav>
       <Routes>
         <Route index element={<PlanView project={project} />} />
@@ -72,27 +101,38 @@ function ProjectHeader({ project }: { project: Project }) {
         <div><dt>Recalculado</dt><dd className="small">{formatDateTime(s?.calculated_at)}</dd></div>
       </dl>
       {warnings.length > 0 && (
-        <div className="warnings">
-          <button className="link" onClick={() => setShowWarnings(!showWarnings)}>
-            ⚠ {warnings.length} alerta(s) de planificación {showWarnings ? '▴' : '▾'}
-          </button>
-          {showWarnings && <ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
-        </div>
+        <Alert tone="warning" compact
+          title={`${warnings.length} alerta(s) de planificación`}
+          action={<button className="link" onClick={() => setShowWarnings(!showWarnings)}>{showWarnings ? 'Ocultar' : 'Ver detalle'}</button>}>
+          {showWarnings && <ul className="alert-list">{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+        </Alert>
       )}
     </header>
   )
 }
 
 function SettingsView({ project }: { project: Project }) {
-  const toast = useToast()
-  const save = useProjectMutation(project.id, (input: ProjectInput) => api.updateProject(project.id, input))
+  const [dirty, setDirty] = useState(false)
+  useUnsavedChanges('project-settings', dirty)
+  const onDirtyChange = useCallback((value: boolean) => setDirty(value), [])
+  const save = useProjectMutation(project.id, (input: ProjectInput) => api.updateProject(project.id, input), {
+    success: () => MSG.projectUpdated,
+    error: 'No se pudo guardar la configuración',
+  })
   const initial: ProjectInput = {
     name: project.name,
     description: project.description,
     methodology: project.methodology,
     start_date: project.start_date,
     target_date: project.target_date,
-    settings: project.settings,
+    settings: {
+      default_time_unit: project.settings.default_time_unit,
+      default_task_duration: project.settings.default_task_duration,
+      default_sprint_duration: project.settings.default_sprint_duration,
+      hours_per_day: project.settings.hours_per_day,
+      days_per_week: project.settings.days_per_week,
+      days_per_month: project.settings.days_per_month,
+    },
   }
   return (
     <div className="page-section narrow">
@@ -102,7 +142,7 @@ function SettingsView({ project }: { project: Project }) {
         duraciones conservan su valor en la unidad elegida (p. ej. “5 días” sigue siendo 5 días).
       </p>
       <ProjectForm key={project.updated_at} initial={initial} submitLabel="Guardar cambios" busy={save.isPending}
-        onSubmit={(input) => save.mutate(input, { onSuccess: () => toast.success('Proyecto actualizado') })} />
+        onSubmit={(input) => save.mutateAsync(input)} onDirtyChange={onDirtyChange} />
     </div>
   )
 }

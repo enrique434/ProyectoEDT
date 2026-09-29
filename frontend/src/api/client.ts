@@ -16,35 +16,56 @@ import type {
   TimeUnit,
 } from './types'
 
+/** A field-level problem reported by the API ({field: "settings.hours_per_day", label, message}). */
+export interface FieldProblem {
+  field: string
+  label: string
+  message: string
+}
+
+/**
+ * Every failure of a request becomes an ApiError with a stable `code`:
+ * API codes (invalid_request, dependency_cycle, not_found, …) plus `network_error` and `server_unavailable`.
+ */
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
   readonly payload: Record<string, unknown>
 
   constructor(status: number, payload: Record<string, unknown>) {
-    super(ApiError.messageOf(payload))
+    super(typeof payload.message === 'string' ? payload.message : ApiError.fallbackMessage(status))
     this.status = status
-    this.code = typeof payload.code === 'string' ? payload.code : 'http_error'
+    this.code = typeof payload.code === 'string' ? payload.code : status >= 500 ? 'server_unavailable' : 'http_error'
     this.payload = payload
   }
 
-  private static messageOf(payload: Record<string, unknown>): string {
-    if (typeof payload.message === 'string') return payload.message
-    if (Array.isArray(payload.detail)) {
-      return payload.detail
-        .map((d: { loc?: unknown[]; msg?: string }) => `${(d.loc ?? []).slice(1).join('.')}: ${d.msg}`)
-        .join('; ')
-    }
-    return 'Error inesperado del servidor'
+  get fieldProblems(): FieldProblem[] {
+    return Array.isArray(this.payload.errors) ? (this.payload.errors as FieldProblem[]) : []
+  }
+
+  private static fallbackMessage(status: number): string {
+    if (status >= 500) return 'El servidor no está disponible en este momento. Inténtelo de nuevo en unos segundos.'
+    if (status === 404) return 'El recurso solicitado no existe.'
+    return 'La solicitud no pudo procesarse.'
   }
 }
 
+const NETWORK_ERROR = {
+  code: 'network_error',
+  message: 'No se pudo conectar con el servidor. Verifique que el backend esté en ejecución y su conexión de red.',
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  let response: Response
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch {
+    throw new ApiError(0, NETWORK_ERROR)
+  }
   if (response.status === 204) return undefined as T
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new ApiError(response.status, data)

@@ -200,7 +200,7 @@ MPP/XML de ProjectLibre, restricciones rígidas (MSO/MFO), exportación PDF del 
 | RNF-01 | Clean Architecture | `domain/` sin imports de FastAPI/SQLAlchemy (lo verifica un test) |
 | RNF-02/03 | SOLID / Clean Code | Motores separados, estrategias, puertos, tipado estático |
 | RNF-04 | Persistencia | SQLite con migraciones Alembic; guardado en cada operación |
-| RNF-05 | Usabilidad | Vista EDT+Gantt estilo ProjectLibre, editor de actividad, pestañas |
+| RNF-05 | Usabilidad | Vista EDT+Gantt estilo ProjectLibre, editor de actividad, pestañas y retroalimentación uniforme (sección 8) |
 | RNF-06 | Integridad | Validación en dominio + FK en BD; nada inválido se persiste |
 | RNF-07 | Rendimiento | CPM O(V+E); calendario con caché acumulativa y búsqueda binaria |
 | RNF-08 | Portabilidad | Web: cualquier SO con navegador |
@@ -241,3 +241,43 @@ RN-01…RN-28 del documento. Validación en el dominio:
 | Recursos | `GET /api/projects/{id}/resource-load` |
 
 Documentación interactiva: `http://localhost:8000/docs`.
+
+---
+
+## 8. Guía de retroalimentación al usuario
+
+Toda acción del sistema (agregar, editar, eliminar, vincular, recalcular) comunica su
+resultado con los mismos cuatro tonos y las mismas piezas visuales.
+
+### 8.1 Tonos
+
+| Tono | Cuándo | Ejemplo |
+|---|---|---|
+| Éxito (verde) | La acción se completó | “Tarea creada: “Login” se agregó dentro de “Sprint 1”” |
+| Error (rojo) | La acción no se realizó | “No se pudo crear la dependencia: Dependencia circular: A → B → A” |
+| Advertencia (ámbar) | Se completó, pero conviene revisar; o faltan datos | “Nuevas alertas de planificación: el fin supera la fecha objetivo” |
+| Información (azul) | Contexto neutral | “Sin cambios: no hay modificaciones que guardar” |
+
+### 8.2 Piezas
+
+| Pieza | Uso | Componente |
+|---|---|---|
+| Notificación | Resultado de una acción; se cierra sola (éxito 4 s, error 12 s) y se pausa al pasar el mouse | `useNotify()` |
+| Diálogo de confirmación | Antes de toda eliminación y de cambios de alto impacto (metodología, jornada) | `useDialogs().confirm / choose` |
+| Alerta en línea | Estado persistente de una página (API caída, sobreasignación, alertas del cronograma) | `<Alert>` |
+| Error de campo | Validación bajo cada control, en vivo después del primer intento de guardado | `<Field error>` |
+| Cambios sin guardar | Indicador + confirmación al cerrar, cambiar de pestaña o recargar | `useGuardedClose`, `useUnsavedChanges` |
+
+### 8.3 Reglas
+
+1. **Título = qué se intentó; mensaje = por qué.** Los errores muestran la acción
+   (“No se pudo guardar el calendario”) y la causa que devuelve el servidor.
+2. **Eliminar siempre pide confirmación** y dice qué se pierde (elementos contenidos,
+   asignaciones, dependencias). Si hay dependencias, el mismo diálogo ofrece resolverlas (RN-28).
+3. **El botón seguro recibe el foco** en acciones destructivas (Enter no borra por accidente).
+4. **Validación doble:** el frontend valida para dar respuesta inmediata; el backend valida
+   siempre y responde `{code, message, errors[{field, label, message}]}` en español.
+5. **Nunca se pierden ediciones en silencio:** los diálogos y páginas con cambios piden
+   confirmar antes de descartarlos.
+6. **Acciones reversibles ofrecen “Deshacer”** (p. ej., una dependencia creada al arrastrar).
+7. Todos los textos viven en `frontend/src/lib/messages.ts` para mantener el mismo tono.
