@@ -27,7 +27,6 @@ const minutesOf = (iv: Interval) => toMinutes(iv.end) - toMinutes(iv.start)
 const hoursOf = (intervals: Interval[]) => intervals.reduce((acc, iv) => acc + Math.max(0, minutesOf(iv)), 0) / 60
 const DEFAULT_DAY: Interval[] = [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '17:00' }]
 
-/** Same rules as the backend WorkCalendar: end after start, no overlaps. */
 function intervalsError(intervals: Interval[]): string | undefined {
   if (intervals.some((iv) => !iv.start || !iv.end)) return 'Complete las horas de inicio y fin.'
   if (intervals.some((iv) => minutesOf(iv) <= 0)) return 'La hora de fin debe ser posterior a la de inicio.'
@@ -53,7 +52,6 @@ function validate(week: Interval[][], exceptions: ExceptionDraft[]): Errors {
   return errors
 }
 
-/** CU-04: weekly working pattern, holidays and exceptions of this project only (RN-02). */
 export function CalendarView({ project }: { project: Project }) {
   const notify = useNotify()
   const [initialWeek] = useState<Interval[][]>(() =>
@@ -63,6 +61,13 @@ export function CalendarView({ project }: { project: Project }) {
   const [week, setWeek] = useState(initialWeek)
   const [exceptions, setExceptions] = useState(initialExceptions)
   const [attempted, setAttempted] = useState(false)
+
+  // Estado para el Modal/Diálogo de Agregar Fecha
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [newDate, setNewDate] = useState('')
+  const [newName, setNewName] = useState('Feriado')
+  const [isWorking, setIsWorking] = useState(false)
+
   const save = useProjectMutation(project.id, (input: CalendarInput) => api.updateCalendar(project.id, input), {
     success: () => MSG.calendarSaved,
     error: 'No se pudo guardar el calendario',
@@ -78,6 +83,33 @@ export function CalendarView({ project }: { project: Project }) {
     setDay(day, week[day].map((iv, i) => (i === index ? { ...iv, ...patch } : iv)))
   const setException = (index: number, patch: Partial<ExceptionDraft>) =>
     setExceptions((list) => list.map((e, i) => (i === index ? { ...e, ...patch } : e)))
+
+  const handleAddException = () => {
+    if (!newDate) {
+      notify.warning({ title: 'Atención', message: 'Por favor seleccione una fecha.' })
+      return
+    }
+    if (exceptions.some((e) => e.day === newDate)) {
+      notify.warning({ title: 'Atención', message: 'Esta fecha ya está registrada.' })
+      return
+    }
+
+    setExceptions((l) => [
+      ...l,
+      {
+        day: newDate,
+        name: newName.trim() || 'Feriado',
+        working: isWorking,
+        intervals: isWorking ? [{ start: '08:00', end: '12:00' }] : [],
+      },
+    ])
+
+    notify.info({ title: 'Fecha agregada', message: 'Fecha agregada a la lista. Recuerde guardar los cambios.' })
+    setIsModalOpen(false)
+    setNewDate('')
+    setNewName('Feriado')
+    setIsWorking(false)
+  }
 
   const submit = () => {
     setAttempted(true)
@@ -97,6 +129,7 @@ export function CalendarView({ project }: { project: Project }) {
       exceptions: exceptions.map((e) => ({ day: e.day, name: e.name.trim(), intervals: e.working ? e.intervals : [] })),
     })
   }
+
   const discard = () => {
     setWeek(initialWeek)
     setExceptions(initialExceptions)
@@ -155,10 +188,11 @@ export function CalendarView({ project }: { project: Project }) {
 
       <div className="section-header">
         <h3>Feriados y excepciones</h3>
-        <Button size="sm" onClick={() => setExceptions((l) => [...l, { day: '', name: 'Feriado', working: false, intervals: [] }])}>
+        <Button size="sm" onClick={() => setIsModalOpen(true)}>
           + Agregar fecha
         </Button>
       </div>
+
       {exceptions.length === 0 && <p className="muted">Sin feriados registrados.</p>}
       {exceptions.length > 0 && (
         <table className="table">
@@ -201,6 +235,41 @@ export function CalendarView({ project }: { project: Project }) {
           </tbody>
         </table>
       )}
+
+      {/* Modal / Diálogo para agregar fecha */}
+      {isModalOpen && (
+        <div className="modal-overlay" style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
+        }}>
+          <div className="modal-content" style={{
+            background: '#fff', padding: '24px', borderRadius: '8px', minWidth: '320px', maxWidth: '400px', display: 'flex', flexDirection: 'column', gap: '16px'
+          }}>
+            <h3>Agregar feriado o excepción</h3>
+            
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span>Fecha:</span>
+              <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} />
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span>Descripción:</span>
+              <input type="text" value={newName} maxLength={120} onChange={(e) => setNewName(e.target.value)} placeholder="Ej. Feriado local" />
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input type="checkbox" checked={isWorking} onChange={(e) => setIsWorking(e.target.checked)} />
+              <span>Es día laborable especial</span>
+            </label>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
+              <Button onClick={() => setIsModalOpen(false)}>Cancelar</Button>
+              <Button variant="primary" onClick={handleAddException}>Agregar</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <p className="hint">Los cambios de esta página se aplican al pulsar “Guardar calendario”; hasta entonces puede descartarlos.</p>
     </div>
   )
